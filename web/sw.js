@@ -15,6 +15,7 @@ const SHELL = [
   "icon-mask.png",
   "data/meta.json",
   "data/algo.json",
+  "data/seed.json",
 ];
 
 self.addEventListener("install", (e) => {

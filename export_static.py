@@ -67,7 +67,15 @@ def main():
         return 1
     t0 = time.time()
     if os.path.isdir(SITE):
-        shutil.rmtree(SITE)
+        # 保留 site/.git：发布分支的历史不被重建冲掉
+        for name in os.listdir(SITE):
+            if name == ".git":
+                continue
+            p = os.path.join(SITE, name)
+            if os.path.isdir(p):
+                shutil.rmtree(p)
+            else:
+                os.remove(p)
     os.makedirs(OUT, exist_ok=True)
 
     con = sqlite3.connect("file:%s?mode=ro" % DB, uri=True)
@@ -171,6 +179,27 @@ def main():
                 settings=json.loads(meta.get("settings", "{}") or "{}"),
                 tag_names=TAG_NAMES)
     jdump(os.path.join(OUT, "algo.json"), algo)
+
+    # ---------- 4.5 学习进度种子：手机首次打开继承真实进度 ----------
+    seed_rev = []
+    for r in con.execute("select voc_id,fm,difficulty,last_interval,next_date,last_response,"
+                         "review_count,wrong_count,first_study,last_study,starred,blocked "
+                         "from reviews"):
+        seed_rev.append([r["voc_id"], r["fm"], r["difficulty"], r["last_interval"],
+                         r["next_date"] or "", r["last_response"] or 0,
+                         r["review_count"] or 0, r["wrong_count"] or 0,
+                         r["first_study"] or "", r["last_study"] or "",
+                         r["starred"] or 0, r["blocked"] or 0])
+    seed_day = []
+    for r in con.execute("select date,new_cnt,review_cnt,total_cnt,correct,wrong,seconds,"
+                         "well,familiar,uncertain,forget from daily order by date"):
+        seed_day.append([r["date"], r["new_cnt"] or 0, r["review_cnt"] or 0, r["total_cnt"] or 0,
+                         r["correct"] or 0, r["wrong"] or 0, r["seconds"] or 0,
+                         r["well"] or 0, r["familiar"] or 0, r["uncertain"] or 0,
+                         r["forget"] or 0])
+    seed_sz = jdump(os.path.join(OUT, "seed.json"),
+                    dict(reviews=seed_rev, daily=seed_day, built_at=meta.get("built_at", "")))
+    log("[seed] %d 条进度 / %d 个学习日，%s" % (len(seed_rev), len(seed_day), kb(seed_sz)))
 
     # ---------- 5. 全局 meta ----------
     meta_sz = jdump(os.path.join(OUT, "meta.json"), dict(
