@@ -111,9 +111,12 @@
       });
     });
   }
-  function idbPut(store, val) {
+  function idbPut(store, val, key) {
     return tx(store, "readwrite").then(function (t) {
-      t.objectStore(store).put(val);
+      // kv 是 out-of-line key 的存储，必须显式给 key；
+      // reviews / daily 有 keyPath，传 key 反而会抛 DataError。
+      if (key === undefined) t.objectStore(store).put(val);
+      else t.objectStore(store).put(val, key);
       return new Promise(function (res, rej) {
         t.oncomplete = res; t.onerror = function () { rej(t.error); }; t.onabort = function () { rej(t.error); };
       });
@@ -193,6 +196,49 @@
     return id;
   }
 
+  /* ---------------- 学习进度种子 ----------------
+   * 站点自带的真实学习记录（seed.json），只在本地库为空时导入一次，
+   * 这样手机首次打开就继承母库的进度，而不是从 0 开始。
+   */
+  var REV_COLS = ["voc_id", "fm", "difficulty", "last_interval", "next_date",
+                  "last_response", "review_count", "wrong_count",
+                  "first_study", "last_study", "starred", "blocked"];
+  var DAY_COLS = ["date", "new_cnt", "review_cnt", "total_cnt", "correct", "wrong",
+                  "seconds", "well", "familiar", "uncertain", "forget"];
+
+  function rowsFrom(arr, cols) {
+    return (arr || []).map(function (a) {
+      var o = {};
+      for (var i = 0; i < cols.length; i++) o[cols[i]] = a[i];
+      if (o.date) o.source = o.source || "maimemo";
+      return o;
+    });
+  }
+
+  async function seedOnce() {
+    var s;
+    try { s = await getJSON("seed.json"); } catch (e) { return []; }
+    if (!s || !s.reviews || !s.reviews.length) return [];
+    var rv = rowsFrom(s.reviews, REV_COLS);
+    var dy = rowsFrom(s.daily, DAY_COLS);
+    var t = await tx("reviews", "readwrite");
+    var os = t.objectStore("reviews");
+    rv.forEach(function (r) { os.put(r); });
+    await new Promise(function (res, rej) {
+      t.oncomplete = res; t.onerror = function () { rej(t.error); };
+      t.onabort = function () { rej(t.error); };
+    });
+    if (dy.length) {
+      var t2 = await tx("daily", "readwrite");
+      var os2 = t2.objectStore("daily");
+      dy.forEach(function (d) { os2.put(d); });
+      await new Promise(function (res) { t2.oncomplete = res; t2.onerror = res; t2.onabort = res; });
+    }
+    // 标记写入失败不阻断：进度已经落库，最多下次启动时重复导入（幂等）
+    try { await idbPut("kv", s.built_at || "1", "seeded"); } catch (e) { }
+    return rv;
+  }
+
   /* ---------------- 启动 ---------------- */
   var BOOT = null;
   function boot() {
@@ -200,6 +246,10 @@
     BOOT = (async function () {
       META = await getJSON("meta.json");
       var rs = await idbAll("reviews");
+      if (!rs.length) {
+        var seeded = await idbGet("kv", "seeded");
+        if (!seeded) rs = await seedOnce();
+      }
       rs.forEach(function (r) { REV.set(r.voc_id, r); });
       var ds = await idbAll("daily");
       ds.forEach(function (d) { DAILY.set(d.date, d); });

@@ -147,7 +147,7 @@ async function viewToday() {
     <div class="page-head">
       <div><div class="eyebrow">Today · ${new Date().toLocaleDateString("zh-CN", { month: "long", day: "numeric", weekday: "long" })}</div>
       <h1>${ov.due ? `今天有 ${ov.due} 个词等着你` : "今天没有到期的复习"}</h1>
-      <p>已坚持 ${ov.streak} 天 · 累计学习 ${fmt(ov.studied)} 词 · 词库共 ${fmt(ov.total_words)} 条</p></div>
+      <p>${ov.streak > 0 ? `已坚持 ${ov.streak} 天 · ` : ""}累计学习 ${fmt(ov.studied)} 词 · ${ov.days} 个学习日 · 词库共 ${fmt(ov.total_words)} 条</p></div>
       <a class="btn primary" href="#/study?mode=review">${svg(IC.check, 15)} 开始复习</a>
     </div>
 
