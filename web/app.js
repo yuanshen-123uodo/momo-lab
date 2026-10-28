@@ -7,6 +7,8 @@ const pct = (a, b) => (b > 0 ? Math.round((a / b) * 100) : 0);
 const fmt = (n) => (n >= 10000 ? (n / 10000).toFixed(1) + " 万" : String(n ?? 0));
 
 async function api(path, opt) {
+  // 离线（PWA）模式：由 store.js 用 IndexedDB + 静态分片应答
+  if (window.MOMO && window.MOMO.offline) return MOMO.api(path, opt);
   const r = await fetch("/api/" + path, opt);
   if (!r.ok) throw new Error("API " + r.status + " " + path);
   return r.json();

@@ -105,8 +105,18 @@ def main():
         lex_total += jdump(os.path.join(OUT, "lex", L + ".json"), [p[0] for p in pairs])
         x_total += jdump(os.path.join(OUT, "x", L + ".json"), [p[1] for p in pairs])
     total_words = sum(letter_count.values())
-    log("[lex]  %d 词 → %d 个首字母分片 %s，扩展片 %s"
-        % (total_words, len(buckets), kb(lex_total), kb(x_total)))
+    # id → 字母片 反查索引（详情弹层按 id 找词用），ids 升序便于二分
+    letters = sorted(buckets)
+    lpos = {L: i for i, L in enumerate(letters)}
+    idx = []
+    for L in letters:
+        for p in buckets[L]:
+            idx.append((p[0][0], L))
+    idx.sort()
+    bsz = jdump(os.path.join(OUT, "bkt.json"),
+                dict(letters=letters, ids=[a for a, _ in idx], b=[lpos[b] for _, b in idx]))
+    log("[lex]  %d 词 → %d 个首字母分片 %s，扩展片 %s，反查索引 %s"
+        % (total_words, len(buckets), kb(lex_total), kb(x_total), kb(bsz)))
 
     # ---------- 2. 词单：id 表 + 分块词数据 ----------
     wmap = {}
@@ -138,16 +148,19 @@ def main():
                     w["collins"] or 0, w["oxford"] or 0, w["frq"] or 0,
                 ])
             dw_total += jdump(os.path.join(OUT, "dw", safe(did), str(b) + ".json"), rows)
-        decks.append(dict(id=did, name=d["name"], kind=d["kind"], count=len(ids)))
+        decks.append(dict(id=did, name=d["name"], kind=d["kind"],
+                          note=d["note"] or "", count=len(ids)))
         log("       词单 %-16s %6d 词 / %2d 块" % (did, len(ids), nblocks))
     log("[deck] %d 个词单，id 表 + 分块共 %s" % (len(decks), kb(dw_total)))
 
     # ---------- 3. 书目 ----------
     books = []
     loaded = {r[0] for r in con.execute("select distinct book_id from book_words")}
-    for r in con.execute("select id,name,voc_count,author,publisher from books order by voc_count desc"):
+    for r in con.execute("select id,name,voc_count,author,publisher,isbn,version "
+                         "from books order by voc_count desc"):
         books.append([r["id"], r["name"], r["voc_count"] or 0, r["author"] or "",
-                      r["publisher"] or "", 1 if r["id"] in loaded else 0])
+                      r["publisher"] or "", r["isbn"] or "", r["version"] or "",
+                      1 if r["id"] in loaded else 0])
     bsz = jdump(os.path.join(OUT, "books.json"), books)
     log("[book] %d 本（%d 本含词表），%s" % (len(books), len(loaded), kb(bsz)))
 
@@ -170,13 +183,38 @@ def main():
     ))
     log("[meta] %s" % kb(meta_sz))
 
-    # ---------- 6. 复制 web 资源 ----------
-    for f in ("index.html", "style.css", "app.js", "store.js", "sw.js",
-              "manifest.webmanifest", "icon-192.png", "icon-512.png", "icon-mask.png"):
+    # ---------- 6. 组装站点 ----------
+    ver = time.strftime("%Y%m%d%H")
+    sw_src = os.path.join(WEB, "sw.js")
+    if os.path.exists(sw_src):
+        with open(sw_src, encoding="utf-8") as f:
+            sw = f.read()
+        with open(os.path.join(SITE, "sw.js"), "w", encoding="utf-8", newline="") as f:
+            f.write(sw.replace("__VER__", ver))
+
+    html_src = os.path.join(WEB, "index.html")
+    if os.path.exists(html_src):
+        with open(html_src, encoding="utf-8") as f:
+            html = f.read()
+        head = ('<meta name="theme-color" content="#f7f5f0">\n'
+                '<link rel="manifest" href="manifest.webmanifest">\n'
+                '<meta name="apple-mobile-web-app-capable" content="yes">\n'
+                '<meta name="apple-mobile-web-app-status-bar-style" content="default">\n'
+                '<meta name="apple-mobile-web-app-title" content="墨墨单词">\n'
+                '<link rel="apple-touch-icon" href="icon-192.png">\n'
+                '<script src="store.js"></script>\n')
+        tail = ('<script>if("serviceWorker" in navigator){addEventListener("load",function(){'
+                'navigator.serviceWorker.register("sw.js").catch(function(){})});}</script>\n')
+        html = html.replace("</head>", head + "</head>").replace("</body>", tail + "</body>")
+        with open(os.path.join(SITE, "index.html"), "w", encoding="utf-8", newline="") as f:
+            f.write(html)
+
+    for f in ("style.css", "app.js", "store.js", "manifest.webmanifest",
+              "icon-192.png", "icon-512.png", "icon-mask.png"):
         src = os.path.join(WEB, f)
         if os.path.exists(src):
             shutil.copy2(src, os.path.join(SITE, f))
-    log("[site] → " + SITE)
+    log("[site] → " + SITE + "  (sw 版本 " + ver + ")")
     log("完成，用时 %.1fs" % (time.time() - t0))
     return 0
 

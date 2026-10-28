@@ -499,13 +499,38 @@ table.tbl td.num { font-family: var(--mono); }
 @keyframes sp { to { transform: rotate(360deg); } }
 
 @media (max-width: 900px) {
-  .sidebar { width: 62px; flex: 0 0 62px; padding: 16px 8px; }
-  .brand .t, .nav-item span, .nav-label, .side-foot { display: none; }
-  .nav-item { justify-content: center; }
-  .page { padding: 24px 20px 60px; }
+  /* 侧边栏 → 底部标签栏，手机上更像原生 App */
+  #app { display: block; min-height: 100vh; }
+  .sidebar {
+    position: fixed; left: 0; right: 0; bottom: 0;
+    width: auto; flex: none; height: 58px;
+    flex-direction: row; align-items: center;
+    padding: 0 4px;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    background: rgba(247, 245, 240, .94);
+    -webkit-backdrop-filter: saturate(1.4) blur(14px);
+    backdrop-filter: saturate(1.4) blur(14px);
+    border-right: 0; border-top: 1px solid var(--line);
+    z-index: 60;
+  }
+  .brand, .nav-label, .side-foot { display: none; }
+  #nav { display: flex; flex-direction: row; width: 100%; align-items: center; gap: 2px; }
+  .nav-item { flex: 1; flex-direction: column; gap: 2px; padding: 6px 0 5px; border-radius: 10px; }
+  .nav-item span { font-size: 10px; letter-spacing: 0; }
+  .nav-item svg { width: 19px; height: 19px; }
+  .nav-item.on { box-shadow: none; }
+  .nav-item .badge { position: absolute; top: 1px; right: 50%; margin-right: -26px; }
+  .main { overflow: visible; }
+  .page { padding: 22px 16px 96px; }
+  /* 学习时沉浸式：藏起底部栏，卡片占满真机可视高度 */
+  body.studying .sidebar { display: none; }
+  body.studying .page { padding: 0; }
+  .study-wrap { height: 100vh; height: 100dvh; }
   .hero { grid-template-columns: 1fr; }
   .quick { grid-template-columns: repeat(2, 1fr); }
-  .study-card { padding: 24px 18px; min-height: auto; }
+  /* 卡片撑满屏幕，四个按钮自然落到拇指能按到的位置 */
+  .study-stage { align-items: stretch; padding: 12px 12px calc(12px + env(safe-area-inset-bottom, 0px)); }
+  .study-card { padding: 22px 18px; min-height: 0; }
   .word-big { font-size: 38px; }
   .study-top { padding: 10px 12px; gap: 8px; flex-wrap: wrap; }
   .study-top .prog { order: 3; flex-basis: 100%; max-width: none; }

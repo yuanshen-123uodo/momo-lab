@@ -12,6 +12,8 @@ data/*.db-wal
 # ---- Web 构建产物 ----
 /dist/
 /site/
+/pwa_shots/
+/shots/
 node_modules/
 
 # ---- Python ----
