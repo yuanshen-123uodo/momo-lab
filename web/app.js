@@ -48,7 +48,9 @@ function renderNav(active) {
   $("#nav").innerHTML = NAV.map(
     (n) => `<a class="nav-item ${active === n.id ? "on" : ""}" href="${n.href}">
       ${svg(IC[n.icon])}<span>${n.name}</span>
-      ${n.id === "today" && S.ov && S.ov.due ? `<em class="badge">${S.ov.due}</em>` : ""}
+      ${n.id === "today" && S.ov && S.ov.due
+        ? `<em class="badge" title="${S.ov.due} 词待复习">${S.ov.due > 99 ? "99+" : S.ov.due}</em>`
+        : ""}
     </a>`
   ).join("");
 }

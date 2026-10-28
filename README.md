@@ -78,6 +78,7 @@ start.bat          Windows 一键启动
 | `data/lex/<a-z>.json` | 全库按首字母分片（浏览/搜索） | ~500 KB |
 | `data/x/<a-z>.json` | 英文释义/词形/相关词（打开详情才拉） | ~350 KB |
 | `data/bkt.json` | id → 字母片 反查索引 | 1.2 MB |
+| `data/seed.json` | 母库导出的真实学习记录（首次打开继承） | 93 KB |
 
 实测：进 App 选一个词单，**总传输约 106 KB**；之后 Service Worker 全缓存，断网也能背。
 
@@ -100,14 +101,36 @@ start.bat          Windows 一键启动
 
 ---
 
+## 部署到 GitHub Pages
+
+`site/` 是纯静态目录，直接推到 `gh-pages` 分支即可（仓库里已保留该分支）：
+
+```bash
+cd site
+git init && git checkout -b gh-pages
+git add -A && git commit -m "deploy"
+git remote add origin https://github.com/<你>/momo-lab.git
+git push -u origin gh-pages
+```
+
+然后仓库 **Settings → Pages → Build and deployment**，Source 选 `Deploy from a branch`，
+Branch 选 `gh-pages` / `/ (root)`，保存。几分钟后 https://\<你\>.github.io/momo-lab/ 生效。
+
+注意：API 方式建仓 / 改 Pages 需要额外的 token 权限，网页上点两下最省事。
+
+---
+
 ## 手机上怎么用
 
-1. 手机浏览器打开部署好的链接
+1. 手机浏览器打开部署好的链接（扫 `qr.png` 也行）
 2. iOS：Safari 分享 → 添加到主屏幕
    Android：Chrome 菜单 → 添加到主屏幕 / 安装应用
 3. 之后从桌面图标进入，全屏、离线、有独立图标
 
-进度存在浏览器 IndexedDB，不上传服务器。
+**首次打开会继承母库进度**：`data/seed.json` 里是母库导出的 1441 条学习状态 +
+94 个学习日统计。本地 IndexedDB 为空时才导入一次，之后就是你自己的数据，互不覆盖。
+
+进度存在浏览器 IndexedDB，不上传服务器。想恢复出厂：清站点数据即可，下次打开会重新导入种子。
 
 ---
 
@@ -115,4 +138,6 @@ start.bat          Windows 一键启动
 
 - ECDICT 直接命中 60%，短语靠「组成词释义拼接」补到 **96.7%** 有释义
 - 2086 本词书中只有 1 本带完整词表（离线包限制），其余靠 ECDICT 考试标签补出 22 个可背词单
-- PWA 版不预置个人学习记录，从零开始；桌面版会导入墨墨运行库里的真实记录
+- PWA 版随包带一份母库导出的学习记录快照（`seed.json`），手机首次打开即继承；
+  它公开在静态文件里，介意的话可以不导出这份种子（注释掉 `export_static.py` 的 4.5 节）
+- 桌面版会导入墨墨运行库里的真实记录，与 PWA 的种子同源
