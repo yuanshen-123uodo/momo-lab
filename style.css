@@ -519,7 +519,11 @@ table.tbl td.num { font-family: var(--mono); }
   .nav-item span { font-size: 10px; letter-spacing: 0; }
   .nav-item svg { width: 19px; height: 19px; }
   .nav-item.on { box-shadow: none; }
-  .nav-item .badge { position: absolute; top: 1px; right: 50%; margin-right: -26px; }
+  /* 徽标贴在图标右上外侧，不压图标笔画 */
+  .nav-item .badge {
+    position: absolute; top: 7px; right: 50%; margin-right: -31px;
+    font-size: 8.5px; line-height: 13px; padding: 0 3px;
+  }
   .main { overflow: visible; }
   .page { padding: 22px 16px 96px; }
   /* 学习时沉浸式：藏起底部栏，卡片占满真机可视高度 */
