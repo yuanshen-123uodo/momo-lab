@@ -1,0 +1,28 @@
+# ---- 生成物（由 build_db.py 重建）----
+data/*.db
+data/*.db-shm
+data/*.db-wal
+
+# ---- 原始数据源：体积大 / 有版权，不入库 ----
+# 墨墨随包数据、运行库、ECDICT 词典
+/sources/
+*.apk
+*.db-journal
+
+# ---- Web 构建产物 ----
+/dist/
+/site/
+node_modules/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log
