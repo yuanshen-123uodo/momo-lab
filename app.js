@@ -63,6 +63,29 @@ function toast(msg) {
   t._t = setTimeout(() => t.classList.remove("on"), 1800);
 }
 
+/* 弹窗统一入口：id="mb" 只能存在一个，否则搜索弹窗与词详情会叠成两层遮罩 */
+function openModal(html) {
+  const old = document.getElementById("mb");
+  if (old) old.remove();
+  document.body.insertAdjacentHTML("beforeend", html);
+  return document.getElementById("mb");
+}
+
+/* Escape 关弹窗：捕获阶段拦下，避免学习页把它当成「退出」 */
+document.addEventListener(
+  "keydown",
+  (e) => {
+    if (e.key !== "Escape") return;
+    const m = document.getElementById("mb");
+    if (m) {
+      m.remove();
+      e.stopImmediatePropagation();
+      e.preventDefault();
+    }
+  },
+  true
+);
+
 function speak(text, rate = 0.9) {
   if (!text || !window.speechSynthesis) return;
   speechSynthesis.cancel();
@@ -112,6 +135,7 @@ async function route() {
     if (path === "browse") return await viewBrowse(q);
     if (path === "stats") return await viewStats();
     if (path === "algo") return await viewAlgo();
+    if (path === "data") return await viewData();
     if (path === "study") return await viewStudy(q);
   } catch (e) {
     main.innerHTML = `<div class="page"><div class="empty"><h3>出错了</h3><p>${esc(e.message)}</p></div></div>`;
@@ -150,7 +174,10 @@ async function viewToday() {
       <div><div class="eyebrow">Today · ${new Date().toLocaleDateString("zh-CN", { month: "long", day: "numeric", weekday: "long" })}</div>
       <h1>${ov.due ? `今天有 ${ov.due} 个词等着你` : "今天没有到期的复习"}</h1>
       <p>${ov.streak > 0 ? `已坚持 ${ov.streak} 天 · ` : ""}累计学习 ${fmt(ov.studied)} 词 · ${ov.days} 个学习日 · 词库共 ${fmt(ov.total_words)} 条</p></div>
-      <a class="btn primary" href="#/study?mode=review">${svg(IC.check, 15)} 开始复习</a>
+      <div class="row" style="gap:8px">
+        <a class="btn" href="#/data">数据</a>
+        <a class="btn primary" href="#/study?mode=review">${svg(IC.check, 15)} 开始复习</a>
+      </div>
     </div>
 
     <div class="hero">
@@ -194,7 +221,7 @@ async function viewToday() {
         <div class="small muted" style="margin:4px 0 10px">${book.started} / ${book.total} 词已开始 · 完成度 ${pct(book.started, book.total)}%</div>
         <div class="bar"><i style="width:${pct(book.started, book.total)}%"></i></div>
       </div>
-      <a class="btn sm" href="#/study?deck=book:${book.id}&mode=mixed">继续</a>
+      <a class="btn sm" href="#/study?deck=${encodeURIComponent(book.id)}&mode=mixed">继续</a>
     </div>` : ""}
 
     <div class="section-title"><h2>最近 7 天</h2><a href="#/stats">详细统计 →</a></div>
@@ -344,7 +371,7 @@ async function quickSearch(q) {
       <div class="w" style="flex:0 0 170px;width:170px">${esc(w.w)}</div>
       <div class="t">${esc((w.tr || "—").replace(/\n/g, " / "))}</div></div>`).join("")}
     </div></div></div>`;
-  document.body.insertAdjacentHTML("beforeend", html);
+  openModal(html);
   $("#x").onclick = () => $("#mb").remove();
   $("#mb").onclick = (e) => { if (e.target.id === "mb") e.target.remove(); };
   $$("#mb .wrow").forEach((r) => (r.onclick = () => { $("#mb").remove(); showWord(+r.dataset.id); }));
@@ -362,7 +389,7 @@ function relText(raw) {
 async function showWord(id) {  const w = await api("word?id=" + id);
   const st = w.st;
   const posList = (w.pos || "").split(/[\/,]/).filter(Boolean);
-  document.body.insertAdjacentHTML("beforeend", `<div class="modal-bg" id="mb"><div class="modal" style="position:relative">
+  openModal(`<div class="modal-bg" id="mb"><div class="modal" style="position:relative">
     <button class="btn ghost sm close" id="x">${svg(IC.x, 15)}</button>
     <div class="row" style="gap:10px;align-items:baseline">
       <h2>${esc(w.w)}</h2>
@@ -403,7 +430,7 @@ async function showWord(id) {  const w = await api("word?id=" + id);
 
 /* ---------------- 学习 ---------------- */
 async function viewStudy(q) {
-  const deck = q.deck || S.settings.lastDeck || (S.ov.book ? "book:" + S.ov.book.id : "f1000");
+  const deck = q.deck || S.settings.lastDeck || (S.ov.book ? S.ov.book.id : "f1000");
   const mode = q.mode || "mixed";
   const uiMode = S.settings.uiMode || "ec";
   const limit = q.limit || (mode === "new" ? S.settings.new_limit || 10 : 20);
@@ -1092,6 +1119,130 @@ next_date = today + interval <span class="k">天</span></div>
   $("#cfm").onchange = calc;
   $("#cd").onchange = calc;
   calc();
+}
+
+/* ---------------- 数据备份 ---------------- */
+async function viewData() {
+  const ov = await api("overview");
+  let est = { usage: 0, quota: 0 };
+  try {
+    if (navigator.storage && navigator.storage.estimate) est = await navigator.storage.estimate();
+  } catch (e) { /* 部分浏览器不支持 */ }
+  const mb = (n) => (n ? (n / 1048576).toFixed(1) + " MB" : "—");
+  const last = localStorage.getItem("momo.lastExport") || "从未导出";
+  const offline = !!(window.MOMO && window.MOMO.offline);
+
+  $("#main").innerHTML = `
+  <div class="page">
+    <div class="page-head">
+      <div><div class="eyebrow">Data · 备份与迁移</div>
+      <h1>你的进度，随时能带走</h1>
+      <p>${offline
+        ? "进度存在这台设备的浏览器里，不上传任何服务器。换手机、清缓存、卸载前先导出一份。"
+        : "进度存在本地 SQLite 数据库里，不联网。换机器前先导出一份。"}</p></div>
+      <a class="btn" href="#/today">${svg(IC.back, 15)} 返回</a>
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));gap:12px">
+      <div class="stat-box"><div class="k">已学词</div><div class="v">${fmt(ov.studied)}<small>词</small></div></div>
+      <div class="stat-box"><div class="k">学习日</div><div class="v">${ov.days}<small>天</small></div></div>
+      <div class="stat-box"><div class="k">待复习</div><div class="v">${fmt(ov.due)}<small>词</small></div></div>
+      <div class="stat-box"><div class="k">本机存储</div><div class="v">${mb(est.usage)}<small>${est.quota ? "/ " + mb(est.quota) : ""}</small></div></div>
+    </div>
+
+    <div class="section-title"><h2>导出</h2></div>
+    <div class="card">
+      <div class="row" style="justify-content:space-between;flex-wrap:wrap;gap:12px">
+        <div style="flex:1;min-width:200px">
+          <b style="font-size:14px">momo-progress.json</b>
+          <div class="small muted" style="margin-top:4px">含 ${fmt(ov.studied)} 个词的记忆因子、难度、到期日，以及 ${ov.days} 天答题记录。手机版与桌面版格式相同，可互相导入。</div>
+          <div class="small muted" style="margin-top:6px">上次导出：${esc(last)}</div>
+        </div>
+        <button class="btn primary" id="exp">导出到文件</button>
+      </div>
+    </div>
+
+    <div class="section-title"><h2>导入 / 合并</h2></div>
+    <div class="card">
+      <div class="row" style="justify-content:space-between;flex-wrap:wrap;gap:12px">
+        <div style="flex:1;min-width:200px">
+          <b style="font-size:14px">从备份文件恢复</b>
+          <div class="small muted" style="margin-top:4px">按「最后学习时间较新者优先」合并，不会覆盖本机更晚的进度；同一个词只保留一条。</div>
+        </div>
+        <button class="btn" id="imp">选择文件…</button>
+        <input type="file" id="file" accept="application/json,.json" style="display:none">
+      </div>
+    </div>
+
+    <div class="section-title"><h2>重置</h2></div>
+    <div class="card">
+      <div class="row" style="justify-content:space-between;flex-wrap:wrap;gap:12px">
+        <div style="flex:1;min-width:200px">
+          <b style="font-size:14px">恢复到初始进度</b>
+          <div class="small muted" style="margin-top:4px">清空本机答题记录，回到${offline ? "随包种子状态（1441 词进度 + 94 天记录）" : "首次导入墨墨运行库时的状态"}。不可撤销，建议先导出。</div>
+        </div>
+        <button class="btn" id="rst">恢复初始</button>
+      </div>
+    </div>
+  </div>`;
+
+  $("#exp").onclick = async () => {
+    try {
+      const data = await api("export");
+      const blob = new Blob([JSON.stringify(data)], { type: "application/json" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `momo-progress-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+      const stamp = new Date().toLocaleString("zh-CN", { hour12: false });
+      localStorage.setItem("momo.lastExport", stamp);
+      const el = document.querySelector("#exp").parentNode.querySelector(".small.muted:last-child");
+      if (el) el.textContent = `上次导出：${stamp}`;
+      toast(`已导出 ${fmt((data.reviews || []).length)} 条进度`);
+    } catch (e) {
+      toast("导出失败：" + e.message);
+    }
+  };
+
+  $("#imp").onclick = () => $("#file").click();
+
+  $("#file").onchange = async (e) => {
+    const f = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!f) return;
+    let data;
+    try {
+      data = JSON.parse(await f.text());
+    } catch (err) {
+      toast("这不是有效的 JSON 文件");
+      return;
+    }
+    if (!data || !Array.isArray(data.reviews)) {
+      toast("文件格式不对：缺少 reviews");
+      return;
+    }
+    try {
+      const r = await api("import", { method: "POST", body: JSON.stringify(data) });
+      toast(`合并完成：新增 ${fmt(r.added || 0)}，更新 ${fmt(r.updated || 0)}`);
+      setTimeout(() => route(), 1200);
+    } catch (err) {
+      toast("导入失败：" + err.message);
+    }
+  };
+
+  $("#rst").onclick = async () => {
+    if (!confirm("确定要清空本机答题记录、恢复到初始进度吗？此操作不可撤销。\n\n建议先点上面的「导出到文件」备份一份。")) return;
+    try {
+      const r = await api("reset", { method: "POST", body: "{}" });
+      toast(`已恢复初始进度：${fmt(r.total || 0)} 词 / ${r.days || 0} 天`);
+      setTimeout(() => route(), 1200);
+    } catch (e) {
+      toast("重置失败：" + e.message);
+    }
+  };
 }
 
 boot();

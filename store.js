@@ -239,6 +239,94 @@
     return rv;
   }
 
+  /* ---------------- 进度导出 / 导入 ----------------
+   * 紧凑行格式（列名顺序见 REV_COLS / DAY_COLS），与 seed.json 同构，
+   * 所以桌面版导出的文件能直接喂给手机版，反之亦然。
+   */
+  function packRows(map, cols) {
+    var out = [];
+    map.forEach(function (o) {
+      out.push(cols.map(function (c) { return o[c] == null ? "" : o[c]; }));
+    });
+    return out;
+  }
+
+  function apiExport() {
+    return {
+      v: 1, app: "momo-lab",
+      exported_at: new Date().toISOString().slice(0, 16).replace("T", " "),
+      total_words: META ? META.total_words : 0,
+      reviews: packRows(REV, REV_COLS),
+      daily: packRows(DAILY, DAY_COLS),
+      settings: { matrix: SETTINGS.matrix, new_limit: SETTINGS.new_limit, mode: SETTINGS.mode }
+    };
+  }
+
+  function waitTx(t) {
+    return new Promise(function (res, rej) {
+      t.oncomplete = res;
+      t.onerror = function () { rej(t.error); };
+      t.onabort = function () { rej(t.error); };
+    });
+  }
+
+  async function writeRows(storeName, rows) {
+    if (!rows.length) return;
+    var t = await tx(storeName, "readwrite");
+    var os = t.objectStore(storeName);
+    rows.forEach(function (r) { os.put(r); });
+    await waitTx(t);
+  }
+
+  async function clearStore(storeName) {
+    var t = await tx(storeName, "readwrite");
+    t.objectStore(storeName).clear();
+    await waitTx(t);
+  }
+
+  /* 恢复出厂：清掉本地进度，再重新导入随包种子（不是清空成 0） */
+  async function apiReset() {
+    await boot();
+    await clearStore("reviews");
+    await clearStore("daily");
+    await clearStore("daylog");
+    REV.clear(); DAILY.clear();
+    var rs = await seedOnce();
+    rs.forEach(function (r) { REV.set(r.voc_id, r); });
+    var ds = await idbAll("daily");
+    ds.forEach(function (d) { DAILY.set(d.date, d); });
+    return { ok: true, total: REV.size, days: DAILY.size };
+  }
+
+  /* 合并导入：同一词保留 last_study 更新的那条，本地没学过的直接补进来 */
+  async function apiImport(data) {
+    await boot();
+    var rv = rowsFrom(data && data.reviews, REV_COLS);
+    var dy = rowsFrom(data && data.daily, DAY_COLS);
+    var added = 0, updated = 0, days = 0;
+    var toWrite = [];
+    rv.forEach(function (r) {
+      if (!r.voc_id) return;
+      var cur = REV.get(r.voc_id);
+      if (!cur) { added++; }
+      else if ((r.last_study || "") <= (cur.last_study || "")) { return; }
+      else { updated++; }
+      toWrite.push(r); REV.set(r.voc_id, r);
+    });
+    var dayRows = [];
+    dy.forEach(function (d) {
+      if (!d.date) return;
+      days++; DAILY.set(d.date, d); dayRows.push(d);
+    });
+    await writeRows("reviews", toWrite);
+    await writeRows("daily", dayRows);
+    if (data && data.settings) {
+      SETTINGS = Object.assign(SETTINGS, data.settings);
+      try { await idbPut("kv", SETTINGS, "settings"); } catch (e) { }
+    }
+    return { ok: true, added: added, updated: updated, days: days, total: REV.size };
+  }
+
   /* ---------------- 启动 ---------------- */
   var BOOT = null;
   function boot() {
@@ -714,6 +802,9 @@
     if (u === "today") return { date: todayStr() };
     if (u === "answer") return apiAnswer(body || {});
     if (u === "star") return apiToggle(parseInt(body.voc_id, 10), "starred");
+    if (u === "export") return apiExport();
+    if (u === "import") return apiImport(body || {});
+    if (u === "reset") return apiReset();
     if (u === "settings") {
       SETTINGS = Object.assign(SETTINGS, body || {});
       await idbPut("kv", SETTINGS, "settings");
@@ -736,17 +827,8 @@
         });
       });
     },
-    exportProgress: async function () {
-      await boot();
-      return { reviews: Array.from(REV.values()), daily: Array.from(DAILY.values()), settings: SETTINGS };
-    },
-    importProgress: async function (data) {
-      await boot();
-      (data.reviews || []).forEach(function (r) { REV.set(r.voc_id, r); });
-      (data.daily || []).forEach(function (d) { DAILY.set(d.date, d); });
-      await Promise.all((data.reviews || []).map(function (r) { return idbPut("reviews", r); }));
-      await Promise.all((data.daily || []).map(function (d) { return idbPut("daily", d); }));
-      return true;
-    }
+    // 导出成与 seed.json 同构的紧凑格式，桌面版与手机版互相吃得下
+    exportProgress: async function () { await boot(); return apiExport(); },
+    importProgress: async function (data) { return apiImport(data); }
   };
 })();
