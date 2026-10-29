@@ -2,7 +2,7 @@
  * 壳（HTML/CSS/JS/图标）预缓存，词库分片按需缓存（内容只读，cache-first）。
  * 这样手机断网也能背单词。
  */
-const CACHE = "momo-2026102913-37001f4f";
+const CACHE = "momo-2026102913-e215cd3d";
 const SHELL = [
   "./",
   "index.html",
