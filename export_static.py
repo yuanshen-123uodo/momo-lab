@@ -14,7 +14,7 @@ export_static.py — 把 data/momo.db 导出成纯静态站点（PWA）需要的
 设计要点：手机上首屏只下载 meta + 一个词单 id 表（几十 KB），
 学哪个词单才拉哪个词单的分块，浏览哪个字母才拉哪个字母片。
 """
-import json, os, shutil, sqlite3, sys, time
+import json, os, shutil, sqlite3, sys, time, hashlib
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 DB = os.environ.get("MOMO_DB") or os.path.join(BASE, "data", "momo.db")
@@ -213,7 +213,15 @@ def main():
     log("[meta] %s" % kb(meta_sz))
 
     # ---------- 6. 组装站点 ----------
-    ver = time.strftime("%Y%m%d%H")
+    # 缓存名由「外壳文件内容」决定：内容一变版本就变，手机 SW 才会换上新的 app.js。
+    # 只按小时取时间戳会漏更新——同一小时内多次导出拿到的是同一个缓存名。
+    h = hashlib.md5()
+    for f in ("index.html", "app.js", "store.js", "style.css", "manifest.webmanifest"):
+        p = os.path.join(WEB, f)
+        if os.path.exists(p):
+            with open(p, "rb") as fh:
+                h.update(fh.read())
+    ver = time.strftime("%Y%m%d%H") + "-" + h.hexdigest()[:8]
     sw_src = os.path.join(WEB, "sw.js")
     if os.path.exists(sw_src):
         with open(sw_src, encoding="utf-8") as f:

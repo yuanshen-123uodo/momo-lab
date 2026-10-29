@@ -89,7 +89,11 @@ def main():
         cont = page.query_selector(".book-card a.btn")
         if cont:
             js_click(page, ".book-card a.btn")
-            page.wait_for_timeout(3000)
+            # 线上首次要下载词单索引 + 词块，等元素出现而不是死等
+            try:
+                page.wait_for_selector(".answer-row button", timeout=25000)
+            except Exception:  # noqa: BLE001
+                pass
             body = (page.inner_text("#main") or "").replace("\n", " | ")
             note("[学习入口·继续] " + body[:110])
             # 答题：用产品原生快捷键 1-4（避免 Playwright 对父容器遮挡的误判）
@@ -120,9 +124,15 @@ def main():
         if bq:
             bq.fill("墨墨")
             page.keyboard.press("Enter")
-            page.wait_for_timeout(2800)
+            try:
+                page.wait_for_selector("#blist a.btn", timeout=20000)
+            except Exception:  # noqa: BLE001
+                page.wait_for_timeout(2500)
         if js_click(page, "#blist a.btn"):
-            page.wait_for_timeout(3200)
+            try:
+                page.wait_for_selector(".answer-row button", timeout=25000)
+            except Exception:  # noqa: BLE001
+                page.wait_for_timeout(2000)
             body = (page.inner_text("#main") or "").replace("\n", " | ")
             note("[词书库·学习] " + body[:110])
             if "出错了" in body:
@@ -134,7 +144,10 @@ def main():
         page.evaluate("() => { location.hash = '#/decks'; }")
         page.wait_for_timeout(2500)
         if js_click(page, ".card.deck a.btn"):
-            page.wait_for_timeout(3000)
+            try:
+                page.wait_for_selector(".answer-row button", timeout=25000)
+            except Exception:  # noqa: BLE001
+                page.wait_for_timeout(2000)
             note("[词单·开始] " + (page.inner_text("#main") or "").replace("\n", " | ")[:110])
 
         # 5) 词库搜索 + 词详情
@@ -144,18 +157,35 @@ def main():
         if sq:
             sq.fill("abandon")
             page.keyboard.press("Enter")
-            page.wait_for_timeout(2500)
+            try:
+                page.wait_for_selector("#mb", timeout=15000)
+                note("[搜索弹窗] " + (page.inner_text("#mb") or "").replace("\n", " | ")[:80])
+            except Exception:  # noqa: BLE001
+                errs.append("搜索 abandon 未弹出结果窗")
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(600)
+            if page.query_selector("#mb"):
+                errs.append("Escape 未能关闭搜索弹窗")
             if js_click(page, "#wlist .wrow[data-id]"):
-                page.wait_for_timeout(2200)
+                try:
+                    page.wait_for_selector("#mb", timeout=15000)
+                except Exception:  # noqa: BLE001
+                    page.wait_for_timeout(1500)
+                page.wait_for_timeout(800)
                 box = page.query_selector("#mb")
-                detail = (box.inner_text() if box else "") or (page.inner_text("#main") or "")
+                detail = (box.inner_text() if box else "") or ""
                 note("[词详情] " + detail.replace("\n", " | ")[:130])
                 if not box:
                     errs.append("点击词条未弹出详情弹窗 #mb")
+                elif "搜索结果" in detail:
+                    errs.append("词详情弹窗显示的仍是搜索结果")
+                n_mb = len(page.query_selector_all("#mb"))
+                if n_mb != 1:
+                    errs.append("弹窗叠加：同时存在 %d 个 #mb" % n_mb)
                 page.keyboard.press("Escape")
                 page.wait_for_timeout(600)
             else:
-                errs.append("搜索 abandon 无结果行")
+                errs.append("词库列表无词条行")
         else:
             errs.append("词库页找不到搜索框 #sq")
 

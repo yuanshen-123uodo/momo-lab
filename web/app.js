@@ -6,12 +6,30 @@ const esc = (s) => (s == null ? "" : String(s)).replace(/[&<>"']/g, (m) => ({ "&
 const pct = (a, b) => (b > 0 ? Math.round((a / b) * 100) : 0);
 const fmt = (n) => (n >= 10000 ? (n / 10000).toFixed(1) + " 万" : String(n ?? 0));
 
+/* 路由序号：切页就 +1。慢请求返回时若序号已变，说明这次渲染已经过期，
+   必须丢弃，否则旧页面会把新页面覆盖掉（线上慢网下真的会发生）。 */
+let ROUTE_SEQ = 0;
+class StaleError extends Error {
+  constructor() {
+    super("stale");
+    this.stale = true;
+  }
+}
+// 事件处理器里触发的 api 若因切页作废，抛出的 StaleError 不应冒到控制台
+window.addEventListener("unhandledrejection", (e) => {
+  if (e.reason && e.reason.stale) e.preventDefault();
+});
+
 async function api(path, opt) {
-  // 离线（PWA）模式：由 store.js 用 IndexedDB + 静态分片应答
-  if (window.MOMO && window.MOMO.offline) return MOMO.api(path, opt);
-  const r = await fetch("/api/" + path, opt);
-  if (!r.ok) throw new Error("API " + r.status + " " + path);
-  return r.json();
+  const seq = ROUTE_SEQ;
+  const data = await (window.MOMO && window.MOMO.offline
+    ? MOMO.api(path, opt)
+    : fetch("/api/" + path, opt).then((r) => {
+        if (!r.ok) throw new Error("API " + r.status + " " + path);
+        return r.json();
+      }));
+  if (seq !== ROUTE_SEQ) throw new StaleError();
+  return data;
 }
 const post = (path, body) =>
   api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -120,6 +138,8 @@ function parseHash() {
 
 async function route() {
   const { path, q } = parseHash();
+  ROUTE_SEQ++; // 让所有在途请求作废
+  const seq = ROUTE_SEQ;
   S.route = path;
   const main = $("#main");
   if (path !== "study") main.style.overflow = "auto";
@@ -138,6 +158,8 @@ async function route() {
     if (path === "data") return await viewData();
     if (path === "study") return await viewStudy(q);
   } catch (e) {
+    if (e && e.stale) return; // 过期渲染，静默丢弃
+    if (seq !== ROUTE_SEQ) return; // 报错也来自旧路由，不覆盖当前页
     main.innerHTML = `<div class="page"><div class="empty"><h3>出错了</h3><p>${esc(e.message)}</p></div></div>`;
   }
 }
