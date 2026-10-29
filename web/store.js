@@ -64,17 +64,21 @@
     return p;
   }
 
+  /* 分片文件名一律小写。界面上的字母按钮给的是大写 "B"，而 GitHub Pages /
+     Linux 的静态托管区分大小写，直接拼会 404（Windows 上测不出来）。 */
   function getLex(bk) {
-    if (caches.lex.has(bk)) return Promise.resolve(caches.lex.get(bk));
-    return getJSON("lex/" + bk + ".json").then(function (r) {
-      lruPut(caches.lex, bk, r);
+    var k = String(bk || "").toLowerCase();
+    if (caches.lex.has(k)) return Promise.resolve(caches.lex.get(k));
+    return getJSON("lex/" + k + ".json").then(function (r) {
+      lruPut(caches.lex, k, r);
       return r;
     });
   }
   function getX(bk) {
-    if (caches.x.has(bk)) return Promise.resolve(caches.x.get(bk));
-    return getJSON("x/" + bk + ".json").then(function (r) {
-      lruPut(caches.x, bk, r);
+    var k = String(bk || "").toLowerCase();
+    if (caches.x.has(k)) return Promise.resolve(caches.x.get(k));
+    return getJSON("x/" + k + ".json").then(function (r) {
+      lruPut(caches.x, k, r);
       return r;
     });
   }
@@ -155,7 +159,7 @@
   var DAILY = new Map();    // date -> 当日统计
   var DECKIDS = new Map();  // deck_id -> [voc_id...]
   var WORDCACHE = new Map();// voc_id -> 词条（学习卡片用）
-  var BKT = null;           // id -> 字母片的映射（按需）
+  var BKT_BLOCKS = new Map(); // 见 bucketOfId
   var SETTINGS = { matrix: "calibrated", new_limit: 10, mode: "mixed" };
 
   function stOf(vid) {
@@ -539,37 +543,45 @@
     }
     if (!target) return null;
     var d = withExt(rowFromLex(target), null);
-    try {
-      var xs = await getX(bk);
-      if (xs[pos] && xs[pos][0] === vid) withExt(d, xs[pos]);
-    } catch (e) { }
+    // 弹窗先用 lex 片里的拼写/音标/中文释义秒开；
+    // 英文释义、词形变化、相关词在 x 片（整片可达 700KB），异步补进来，
+    // 不再让用户对着空白等十几秒。
     WORDCACHE.set(vid, d);
+    getX(bk)
+      .then(function (xs) {
+        if (xs[pos] && xs[pos][0] === vid) withExt(d, xs[pos]);
+      })
+      .catch(function () { /* 补不到就保持基础信息 */ });
     return attach(d);
   }
 
+  /* id → 首字母片：索引按 20000 个 id 分块，点一个词只拉对应那块（约 20KB）。
+     以前是整份 1.3MB 的 bkt.json，慢网下光索引就要几十秒。 */
+  var BKT_CHUNK = 20000;
+  var BKT_BLOCKS = new Map();
+
   async function bucketOfId(vid) {
-    if (BKT) return findBkt(vid);
-    try {
-      BKT = await getJSON("bkt.json");
-    } catch (e) {
-      // 没有索引就退化：按字母片顺序扫
-      var order = "abcdefghijklmnopqrstuvwxyz_".split("");
-      for (var i = 0; i < order.length; i++) {
-        try {
-          var rows = await getLex(order[i]);
-          for (var j = 0; j < rows.length; j++) if (rows[j][0] === vid) return order[i];
-        } catch (e2) { }
+    var k = Math.floor(vid / BKT_CHUNK);
+    var c = BKT_BLOCKS.get(k);
+    if (c === undefined) {
+      try {
+        c = await getJSON("bkt/" + k + ".json");
+      } catch (e) {
+        c = null;
       }
-      return null;
+      BKT_BLOCKS.set(k, c);
     }
-    return findBkt(vid);
-  }
-  function findBkt(vid) {
-    var ids = BKT.ids, b = BKT.b, lo = 0, hi = ids.length - 1;
-    while (lo <= hi) {
-      var mid = (lo + hi) >> 1;
-      if (ids[mid] === vid) return BKT.letters[b[mid]];
-      if (ids[mid] < vid) lo = mid + 1; else hi = mid - 1;
+    if (c && typeof c.b === "string") {
+      var ch = c.b.charAt(vid - c.start);
+      if (ch && ch !== ".") return ch;
+    }
+    // 索引缺失时退化：按字母片顺序找（慢，但不会白屏）
+    var order = "abcdefghijklmnopqrstuvwxyz_".split("");
+    for (var i = 0; i < order.length; i++) {
+      try {
+        var rows = await getLex(order[i]);
+        for (var j = 0; j < rows.length; j++) if (rows[j][0] === vid) return order[i];
+      } catch (e2) { /* 该片不存在就跳过 */ }
     }
     return null;
   }

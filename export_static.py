@@ -113,18 +113,27 @@ def main():
         lex_total += jdump(os.path.join(OUT, "lex", L + ".json"), [p[0] for p in pairs])
         x_total += jdump(os.path.join(OUT, "x", L + ".json"), [p[1] for p in pairs])
     total_words = sum(letter_count.values())
-    # id → 字母片 反查索引（详情弹层按 id 找词用），ids 升序便于二分
+    # id → 字母片 反查索引（详情弹层按 id 找词用）。
+    # 原来是一整个 1.3 MB 的 {ids, b}，慢网下光拉索引就要 40 秒。
+    # 改成按 id 分块：每块 20000 个位置，用定长字符串存字母，
+    # 点一个词只需拉 20 KB 的对应块。
+    CHUNK = 20000
     letters = sorted(buckets)
-    lpos = {L: i for i, L in enumerate(letters)}
-    idx = []
-    for L in letters:
-        for p in buckets[L]:
-            idx.append((p[0][0], L))
-    idx.sort()
-    bsz = jdump(os.path.join(OUT, "bkt.json"),
-                dict(letters=letters, ids=[a for a, _ in idx], b=[lpos[b] for _, b in idx]))
-    log("[lex]  %d 词 → %d 个首字母分片 %s，扩展片 %s，反查索引 %s"
-        % (total_words, len(buckets), kb(lex_total), kb(x_total), kb(bsz)))
+    chunks = {}
+    for vid, L in ((p[0][0], L) for L in letters for p in buckets[L]):
+        k, off = divmod(vid, CHUNK)
+        arr = chunks.get(k)
+        if arr is None:
+            arr = ["."] * CHUNK  # . 表示该位置没有词
+            chunks[k] = arr
+        arr[off] = L
+    os.makedirs(os.path.join(OUT, "bkt"), exist_ok=True)
+    bsz = 0
+    for k, arr in sorted(chunks.items()):
+        bsz += jdump(os.path.join(OUT, "bkt", "%d.json" % k),
+                     dict(start=k * CHUNK, size=CHUNK, b="".join(arr)))
+    log("[lex]  %d 词 → %d 个首字母分片 %s，扩展片 %s，反查索引 %d 块 %s"
+        % (total_words, len(buckets), kb(lex_total), kb(x_total), len(chunks), kb(bsz)))
 
     # ---------- 2. 词单：id 表 + 分块词数据 ----------
     wmap = {}

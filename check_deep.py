@@ -189,6 +189,22 @@ def main():
         else:
             errs.append("词库页找不到搜索框 #sq")
 
+        # 5.5) 字母切换：分片文件名是小写，Linux 静态托管区分大小写，
+        #      界面按钮给的是大写字母，这里必须逐个大写验证一次
+        page.evaluate("() => { location.hash = '#/browse'; }")
+        page.wait_for_timeout(2200)
+        for L in ("B", "S", "Z"):
+            page.evaluate(
+                """l => { const b = [...document.querySelectorAll('.alpha button')]
+                         .find(x => x.dataset.l === l); if (b) b.click(); }""",
+                L,
+            )
+            page.wait_for_timeout(2600)
+            n = len(page.query_selector_all("#wlist .wrow"))
+            note("[字母 %s] 列表行数=%d" % (L, n))
+            if n == 0:
+                errs.append("字母 %s 无结果（分片文件名大小写导致 404？）" % L)
+
         # 6) 统计页点某天
         page.evaluate("() => { location.hash = '#/stats'; }")
         page.wait_for_timeout(2800)
