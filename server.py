@@ -112,7 +112,7 @@ def overview():
     if book:
         n = c.execute("select count(*) from book_words where book_id=?", (book[0],)).fetchone()[0]
         ok = c.execute("select count(*) from book_words bw join reviews r on r.voc_id=bw.voc_id where bw.book_id=?", (book[0],)).fetchone()[0]
-        bookinfo = dict(id=book[0], name=book[1], total=n, started=ok)
+        bookinfo = dict(id="book:%s" % book[0], name=book[1], total=n, started=ok)
     today_row = c.execute("select new_cnt,review_cnt,total_cnt,seconds from daily where date=?", (t,)).fetchone()
     return dict(
         due=due, total_words=total, studied=studied, mastered=mastered, learning=learning,
@@ -426,6 +426,81 @@ def settings(body):
     return cur
 
 
+# 导出/导入用的列顺序，必须与 web/store.js 的 REV_COLS / DAY_COLS 一致
+REV_COLS = ("voc_id", "fm", "difficulty", "last_interval", "next_date",
+            "last_response", "review_count", "wrong_count",
+            "first_study", "last_study", "starred", "blocked")
+DAY_COLS = ("date", "new_cnt", "review_cnt", "total_cnt", "correct", "wrong",
+            "seconds", "well", "familiar", "uncertain", "forget")
+
+
+def export_progress():
+    """导出成与 seed.json 同构的紧凑格式，桌面版与手机版互相吃得下。"""
+    c = conn()
+    total = c.execute("select count(*) from words").fetchone()[0]
+    rv = [list(r) for r in c.execute("select %s from reviews" % ",".join(REV_COLS))]
+    dy = [list(r) for r in c.execute("select %s from daily order by date" % ",".join(DAY_COLS))]
+    cur = json.loads(meta_get("settings", "{}") or "{}")
+    return dict(v=1, app="momo-lab",
+                exported_at=datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
+                total_words=total, reviews=rv, daily=dy,
+                settings={k: cur.get(k) for k in ("matrix", "new_limit", "mode") if k in cur})
+
+
+def import_progress(data):
+    """合并导入：同一词保留 last_study 更新的那条，本地没学过的直接补进来。"""
+    c = conn()
+    added = updated = days = 0
+    for row in data.get("reviews") or []:
+        rec = dict(zip(REV_COLS, row))
+        vid = rec["voc_id"]
+        if not vid:
+            continue
+        cur = c.execute("select last_study from reviews where voc_id=?", (vid,)).fetchone()
+        if cur is None:
+            added += 1
+        else:
+            if (rec["last_study"] or "") <= (cur[0] or ""):
+                continue
+            updated += 1
+        c.execute("insert into reviews(%s) values(%s) "
+                  "on conflict(voc_id) do update set %s"
+                  % (",".join(REV_COLS), ",".join(["?"] * len(REV_COLS)),
+                     ",".join("%s=excluded.%s" % (k, k) for k in REV_COLS if k != "voc_id")),
+                  tuple(rec[k] for k in REV_COLS))
+    for row in data.get("daily") or []:
+        rec = dict(zip(DAY_COLS, row))
+        if not rec["date"]:
+            continue
+        days += 1
+        c.execute("insert into daily(%s) values(%s) "
+                  "on conflict(date) do update set %s"
+                  % (",".join(DAY_COLS), ",".join(["?"] * len(DAY_COLS)),
+                     ",".join("%s=excluded.%s" % (k, k) for k in DAY_COLS if k != "date")),
+                  tuple(rec[k] for k in DAY_COLS))
+    if data.get("settings"):
+        settings(data["settings"])
+    c.commit()
+    return dict(ok=True, added=added, updated=updated, days=days,
+                total=c.execute("select count(*) from reviews").fetchone()[0])
+
+
+def reset_progress():
+    """恢复出厂：回到母库导入时的基线（reviews_origin / daily_origin 快照）。"""
+    c = conn()
+    c.execute("delete from reviews")
+    c.execute("delete from daily")
+    c.execute("delete from day_words")
+    for t in ("reviews", "daily"):
+        try:
+            c.execute("insert into %s select * from %s_origin" % (t, t))
+        except sqlite3.OperationalError:
+            pass
+    c.commit()
+    return dict(ok=True, total=c.execute("select count(*) from reviews").fetchone()[0],
+                days=c.execute("select count(*) from daily").fetchone()[0])
+
+
 def toggle(vid, key):
     c = conn()
     r = c.execute("select %s from reviews where voc_id=?" % key, (vid,)).fetchone()
@@ -484,6 +559,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json(books(g("q", ""), g("page", 0), g("sort", "count"), g("loaded")))
             if p == "/api/today":
                 return self._json(dict(date=today()))
+            if p == "/api/export":
+                return self._json(export_progress())
         except Exception as e:
             import traceback
             traceback.print_exc()
@@ -506,6 +583,10 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json(toggle(int(body["voc_id"]), "starred"))
             if u.path == "/api/block":
                 return self._json(toggle(int(body["voc_id"]), "blocked"))
+            if u.path == "/api/import":
+                return self._json(import_progress(body))
+            if u.path == "/api/reset":
+                return self._json(reset_progress())
         except Exception as e:
             import traceback
             traceback.print_exc()
@@ -522,6 +603,12 @@ def ensure_schema():
     for col in ("well", "familiar", "uncertain", "forget"):
         if col not in cols:
             c.execute("alter table daily add column %s integer default 0" % col)
+    # 「恢复出厂」的基线快照：首次启动时把母库导入后的状态固化下来，之后不再动
+    for t in ("reviews", "daily"):
+        has = c.execute("select 1 from sqlite_master where type='table' and name=?",
+                        (t + "_origin",)).fetchone()
+        if not has:
+            c.execute("create table %s_origin as select * from %s" % (t, t))
     c.commit()
 
 

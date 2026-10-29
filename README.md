@@ -54,6 +54,8 @@ build_db.py        墨墨数据 + ECDICT → SQLite
 server.py          标准库 HTTP 服务 + REST API（零依赖）
 export_static.py   SQLite → 静态分片（PWA 数据管线）
 gen_icons.py       Chromium 渲染 PWA 图标
+check_deep.py      手机视口全流程巡检（7 页 + 学习 + 导出导入 + 离线，抓 4xx/JS 异常）
+check_pwa.py       PWA 安装条件检查（manifest / Service Worker / 离线重载）
 web/
   index.html       单页骨架
   app.js           7 个页面 + hash 路由（服务端/离线双用）
@@ -131,6 +133,42 @@ Branch 选 `gh-pages` / `/ (root)`，保存。几分钟后 https://\<你\>.githu
 94 个学习日统计。本地 IndexedDB 为空时才导入一次，之后就是你自己的数据，互不覆盖。
 
 进度存在浏览器 IndexedDB，不上传服务器。想恢复出厂：清站点数据即可，下次打开会重新导入种子。
+
+---
+
+## 数据备份与迁移
+
+首页右上角「数据」→ `#/data`，三种操作：
+
+| 操作 | 行为 |
+|---|---|
+| **导出** | 下载 `momo-progress-YYYY-MM-DD.json`，含全部词的学习状态 + 每日统计 + 设置 |
+| **导入** | 选文件后**合并**，不覆盖：同一个词比较 `last_study`，较新的一方胜出 |
+| **恢复初始** | 清空本机记录，重新回到种子状态（PWA）或首次导入状态（桌面） |
+
+手机版和桌面版的文件格式**完全相同**，可以互相导入：
+
+```bash
+# 手机背了一周，想把进度搬回电脑
+# 手机 → 数据 → 导出 → 把 json 传到电脑 → 电脑 → 数据 → 导入
+```
+
+导出的结构（紧凑数组，字段顺序固定，见 `server.py` 的 `REV_COLS` / `DAY_COLS`）：
+
+```json
+{
+  "v": 1, "app": "momo-lab", "exported_at": "2026-10-29 12:50",
+  "total_words": 129927,
+  "reviews": [[voc_id, fm, difficulty, last_interval, next_date, last_response,
+               review_count, wrong_count, first_study, last_study, starred, blocked], ...],
+  "daily":   [[date, new_cnt, review_cnt, total_cnt, correct, wrong, seconds,
+               well, familiar, uncertain, forget], ...],
+  "settings": { "matrix": "fit", "new_limit": 20 }
+}
+```
+
+没有云端，就没有「两台设备自动同步」。跨设备时手动导一次；同一个词在两边都背过，
+导入后保留最后学习时间较晚的那条状态。
 
 ---
 
