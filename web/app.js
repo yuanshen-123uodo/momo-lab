@@ -358,7 +358,7 @@ async function viewBrowse(q) {
         ? `词库共 ${fmt((S.ov && S.ov.total_words) || 0)} 条 · 当前 ${letter === "all" ? "A" : letter} 开头 ${fmt(d.total)} 条 · 按需分块加载，首屏只取 60 条`
         : `${fmt(d.total)} 条词条 · 点击任意词查看音标、释义、词形变化与学习记录`}</p></div></div>
     <div class="toolbar">
-      <input class="input grow" id="sq" placeholder="输入英文单词，支持前缀与片段（如 bandon 也能找到 abandon）" style="max-width:420px">
+      <input class="input grow" id="sq" placeholder="输入单词，可搜片段" style="max-width:420px">
       <div class="seg" id="sortseg">
         <button data-s="alpha" class="${sort === "alpha" ? "on" : ""}">字母</button>
         <button data-s="frq" class="${sort === "frq" ? "on" : ""}">词频</button>
