@@ -65,22 +65,36 @@
   }
 
   /* 分片文件名一律小写。界面上的字母按钮给的是大写 "B"，而 GitHub Pages /
-     Linux 的静态托管区分大小写，直接拼会 404（Windows 上测不出来）。 */
-  function getLex(bk) {
-    var k = String(bk || "").toLowerCase();
+     Linux 的静态托管区分大小写，直接拼会 404（Windows 上测不出来）。
+     词库本身也分块（LEXBLK 词/块），按 (字母, 块号) 取，不再一次拉整个字母。 */
+  function lexPath(L, b) {
+    return String(L || "").toLowerCase() + "/" + (b || 0);
+  }
+  function getLex(L, b) {
+    var k = lexPath(L, b);
     if (caches.lex.has(k)) return Promise.resolve(caches.lex.get(k));
     return getJSON("lex/" + k + ".json").then(function (r) {
       lruPut(caches.lex, k, r);
       return r;
     });
   }
-  function getX(bk) {
-    var k = String(bk || "").toLowerCase();
+  function getX(L, b) {
+    var k = lexPath(L, b);
     if (caches.x.has(k)) return Promise.resolve(caches.x.get(k));
     return getJSON("x/" + k + ".json").then(function (r) {
       lruPut(caches.x, k, r);
       return r;
     });
+  }
+  /* 分块参数来自 meta.json（lex_block），拿不到时按 800 兜底 */
+  function lexBlock() {
+    return (META && META.lex_block) || 800;
+  }
+  function letterInfo(L) {
+    var m = META && META.lex && META.lex[L];
+    if (m) return m;
+    var n = (META && META.letters && META.letters[L]) || 0;
+    return { n: n, blocks: Math.ceil(n / lexBlock()) };
   }
 
   /* ---------------- IndexedDB ---------------- */
@@ -533,21 +547,21 @@
       var c = WORDCACHE.get(vid);
       if (c && c.df !== undefined && c.tags_cn) return attach(c);
     }
-    // 从拼写反查字母片：先靠 bkt 索引，没有就逐个字母片找
-    var bk = await bucketOfId(vid);
-    if (bk == null) return null;
-    var rows = await getLex(bk);
+    // 从拼写反查所在分块：先靠 bkt 索引，没有就逐块找
+    var loc = await bucketOfId(vid);
+    if (!loc) return null;
+    var rows = await getLex(loc.L, loc.b);
     var target = null, pos = -1;
     for (var i = 0; i < rows.length; i++) {
       if (rows[i][0] === vid) { target = rows[i]; pos = i; break; }
     }
     if (!target) return null;
     var d = withExt(rowFromLex(target), null);
-    // 弹窗先用 lex 片里的拼写/音标/中文释义秒开；
-    // 英文释义、词形变化、相关词在 x 片（整片可达 700KB），异步补进来，
+    // 弹窗先用 lex 块里的拼写/音标/中文释义秒开；
+    // 英文释义、词形变化、相关词在 x 片（同块对齐），异步补进来，
     // 不再让用户对着空白等十几秒。
     WORDCACHE.set(vid, d);
-    getX(bk)
+    getX(loc.L, loc.b)
       .then(function (xs) {
         if (xs[pos] && xs[pos][0] === vid) withExt(d, xs[pos]);
       })
@@ -555,8 +569,9 @@
     return attach(d);
   }
 
-  /* id → 首字母片：索引按 20000 个 id 分块，点一个词只拉对应那块（约 20KB）。
-     以前是整份 1.3MB 的 bkt.json，慢网下光索引就要几十秒。 */
+  /* id → {L, b}：索引按 20000 个 id 分块，块内是稀疏记录
+     {s: 起始 id, i: [块内偏移...], c: ["a3"...]}，
+     点一个词只拉对应那块（约 9KB）。 */
   var BKT_CHUNK = 20000;
   var BKT_BLOCKS = new Map();
 
@@ -571,19 +586,53 @@
       }
       BKT_BLOCKS.set(k, c);
     }
-    if (c && typeof c.b === "string") {
-      var ch = c.b.charAt(vid - c.start);
-      if (ch && ch !== ".") return ch;
+    if (c) {
+      var code = null;
+      if (typeof c.b === "string" && vid >= c.s && vid - c.s < c.b.length) {
+        // 兼容老结构：定长串，"." 表示空位
+        var ch = c.b.charAt(vid - c.s);
+        if (ch && ch !== ".") code = ch + "0";
+      } else if (c.i) {
+        var lo = 0, hi = c.i.length - 1, off = vid - c.s;
+        while (lo <= hi) {
+          var mid = (lo + hi) >> 1;
+          if (c.i[mid] === off) { code = c.c[mid]; break; }
+          if (c.i[mid] < off) lo = mid + 1; else hi = mid - 1;
+        }
+      }
+      if (code) return { L: code.charAt(0), b: parseInt(code.slice(1), 16) || 0 };
     }
-    // 索引缺失时退化：按字母片顺序找（慢，但不会白屏）
+    // 索引缺失时退化：逐字母逐块找（慢，但不会白屏）
     var order = "abcdefghijklmnopqrstuvwxyz_".split("");
     for (var i = 0; i < order.length; i++) {
-      try {
-        var rows = await getLex(order[i]);
-        for (var j = 0; j < rows.length; j++) if (rows[j][0] === vid) return order[i];
-      } catch (e2) { /* 该片不存在就跳过 */ }
+      var info = letterInfo(order[i]);
+      for (var b = 0; b < info.blocks; b++) {
+        try {
+          var rows = await getLex(order[i], b);
+          for (var j = 0; j < rows.length; j++) {
+            if (rows[j][0] === vid) return { L: order[i], b: b };
+          }
+        } catch (e2) { /* 该块不存在就跳过 */ }
+      }
     }
     return null;
+  }
+
+  /* 全库搜索：前缀桶给即时结果，全局紧凑词典兜底"包含式"匹配。
+     以前的实现只能在当前字母片里找，搜 bandon 找不到 abandon。 */
+  var SX_PARTS = 8;
+  var SX_ALL = null;
+
+  async function ensureAllWords() {
+    if (SX_ALL) return SX_ALL;
+    var parts = [];
+    for (var i = 0; i < SX_PARTS; i++) parts.push(i);
+    var res = await Promise.all(parts.map(function (i) {
+      return getJSON("sxa/" + i + ".json").catch(function () { return []; });
+    }));
+    SX_ALL = [];
+    res.forEach(function (arr) { if (arr && arr.length) SX_ALL = SX_ALL.concat(arr); });
+    return SX_ALL;
   }
 
   async function apiSearch(q, limit) {
@@ -591,22 +640,53 @@
     q = (q || "").trim().toLowerCase();
     if (!q) return [];
     limit = parseInt(limit || 30, 10);
-    var rows = await getLex(bucketOf(q));
-    var hits = [];
-    for (var i = 0; i < rows.length && hits.length < limit * 3; i++) {
-      var w = rows[i][1].toLowerCase();
-      if (w.indexOf(q) === 0) hits.push({ row: rows[i], i: i, pre: 0 });
+
+    var key = (q.length >= 2 ? q.slice(0, 2) : q.charAt(0) + "_")
+      .replace(/[^a-z0-9_]/g, "_");
+    var bucket = [];
+    try {
+      bucket = await getJSON("sx/" + key + ".json");
+    } catch (e) {
+      bucket = [];
     }
-    for (var j = 0; j < rows.length && hits.length < limit * 3; j++) {
-      var w2 = rows[j][1].toLowerCase();
-      if (w2.indexOf(q) > 0) hits.push({ row: rows[j], i: j, pre: 1 });
-    }
-    hits.sort(function (a, b2) { return a.pre - b2.pre || a.row[1].length - b2.row[1].length || (a.row[5] || 0) - (b2.row[5] || 0); });
-    var out = hits.slice(0, limit).map(function (h) {
-      var d = attach(rowFromLex(h.row));
-      WORDCACHE.set(d.id, d);
-      return d;
+
+    var pre = [], mid = [], seen = new Set();
+    (bucket || []).forEach(function (r) {
+      if (!r || !r[1]) return;
+      var w = String(r[1]).toLowerCase(), at = w.indexOf(q);
+      if (at < 0) return;
+      seen.add(r[0]);
+      (at === 0 ? pre : mid).push(r);
     });
+
+    // 前缀一个都没命中时才拉全库做"包含式"搜索（8 份共约 0.9MB，只发生一次）。
+    // 前缀有结果就直接用，不让常见查询背上全库下载的代价。
+    if (pre.length === 0) {
+      try {
+        var all = await ensureAllWords();
+        all.forEach(function (r) {
+          if (seen.has(r[0])) return;
+          var w = String(r[1] || "").toLowerCase();
+          if (w.indexOf(q) > 0) { seen.add(r[0]); mid.push(r); }
+        });
+      } catch (e) { /* 兜底索引不可用就只给前缀结果 */ }
+    }
+
+    var ord = function (a, b) {
+      return a[1].length - b[1].length || (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0);
+    };
+    pre.sort(ord);
+    mid.sort(ord);
+    var picked = pre.slice(0, limit).concat(mid.slice(0, Math.max(0, limit - pre.length)));
+
+    // 补释义：同前缀的词通常落在同一个 lex 块里，getLex 有缓存，开销很小
+    var out = [];
+    for (var i = 0; i < picked.length; i += 8) {
+      var chunk = await Promise.all(picked.slice(i, i + 8).map(function (r) {
+        return apiWordId(r[0]).catch(function () { return null; });
+      }));
+      chunk.forEach(function (d) { if (d) out.push(d); });
+    }
     return out;
   }
 
@@ -614,18 +694,46 @@
     await boot();
     page = Math.max(0, parseInt(page || 0, 10));
     var size = 60;
-    if (!letter || letter === "all") {
-      // 全部字母：退化为按 a 开头的首屏（避免拉全库）
-      letter = "a";
+    var L = (!letter || letter === "all") ? "a" : String(letter).toLowerCase();
+    var info = letterInfo(L);
+    var blk = lexBlock();
+
+    // 词频排序要整个字母参与才准确，只能全量加载（块级缓存，第二次就快）
+    if (sort === "frq") {
+      var all = [];
+      for (var b = 0; b < (info.blocks || 0); b++) {
+        var part = await getLex(L, b).catch(function () { return []; });
+        if (part.length) all = all.concat(part);
+      }
+      all.sort(function (x, y) { return (x[5] ? 0 : 1) - (y[5] ? 0 : 1) || x[5] - y[5]; });
+      var slice = all.slice(page * size, page * size + size);
+      return {
+        total: all.length, page: page, size: size, letter: L,
+        items: slice.map(function (a) {
+          var d = attach(rowFromLex(a));
+          WORDCACHE.set(d.id, d);
+          return d;
+        })
+      };
     }
-    var rows = (await getLex(letter)).slice();
-    if (sort === "frq") rows.sort(function (a, b) { return (a[5] ? 0 : 1) - (b[5] ? 0 : 1) || a[5] - b[5]; });
-    else if (sort === "len") rows.sort(function (a, b) { return a[1].length - b[1].length; });
-    var total = rows.length;
-    var pageRows = rows.slice(page * size, page * size + size);
+
+    // 字母序：块内天然有序，一页只拉覆盖到的 1-2 块（首屏约 60KB，不是 1.1MB）
+    var total = info.n || 0;
+    var start = page * size;
+    var end = Math.min(start + size, total);
+    var rows = [];
+    if (end > start) {
+      var b0 = Math.floor(start / blk), b1 = Math.floor((end - 1) / blk);
+      for (var bb = b0; bb <= b1; bb++) {
+        var chunk = await getLex(L, bb).catch(function () { return []; });
+        if (chunk.length) rows = rows.concat(chunk);
+      }
+      var from = start - b0 * blk;
+      rows = rows.slice(from, from + (end - start));
+    }
     return {
-      total: total, page: page, size: size,
-      items: pageRows.map(function (a) {
+      total: total, page: page, size: size, letter: L,
+      items: rows.map(function (a) {
         var d = attach(rowFromLex(a));
         WORDCACHE.set(d.id, d);
         return d;

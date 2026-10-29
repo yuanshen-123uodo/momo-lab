@@ -1,13 +1,18 @@
 """深度巡检：遍历全部页面与真实交互路径，抓 4xx/5xx、JS 异常、布局溢出。
 
 用法： python check_deep.py [URL]
+      MOMO_UA="MomoNative/1.0" python check_deep.py [URL]   # 模拟原生壳
 """
+import os
 import sys
 
 from playwright.sync_api import sync_playwright
 
 URL = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8123/"
 IPHONE = dict(viewport={"width": 390, "height": 844}, device_scale_factor=2, is_mobile=True, has_touch=True)
+_UA = os.environ.get("MOMO_UA")
+if _UA:
+    IPHONE["user_agent"] = _UA
 
 ROUTES = [
     ("今日", "#/today"),
@@ -257,19 +262,23 @@ def main():
             except Exception as exc:  # noqa: BLE001
                 errs.append("导出下载失败: " + str(exc)[:140])
 
-        # 8) 离线重载
-        ctx.set_offline(True)
-        try:
-            page.reload(wait_until="domcontentloaded", timeout=30000)
-            page.wait_for_timeout(4000)
-            txt = (page.inner_text("body") or "").replace("\n", " | ")
-            note("[离线] " + txt[:110])
-            if "数据未就绪" in txt or not txt.strip():
-                errs.append("离线重载后页面空白")
-        except Exception as exc:  # noqa: BLE001
-            errs.append("离线重载失败: " + str(exc)[:140])
-        finally:
-            ctx.set_offline(False)
+        # 8) 离线重载：原生壳里资源全在 assets，没有 SW 也不需要断网能力，
+        #    这种情况跳过（MOMO_UA 带 MomoNative 时）
+        if _UA and "MomoNative" in _UA:
+            note("[离线] 跳过：原生壳不依赖 Service Worker，资源随包")
+        else:
+            ctx.set_offline(True)
+            try:
+                page.reload(wait_until="domcontentloaded", timeout=30000)
+                page.wait_for_timeout(4000)
+                txt = (page.inner_text("body") or "").replace("\n", " | ")
+                note("[离线] " + txt[:110])
+                if "数据未就绪" in txt or not txt.strip():
+                    errs.append("离线重载后页面空白")
+            except Exception as exc:  # noqa: BLE001
+                errs.append("离线重载失败: " + str(exc)[:140])
+            finally:
+                ctx.set_offline(False)
 
         page.screenshot(path="D:/re-targets/maimemo/platform/shot_mobile.png")
         b.close()

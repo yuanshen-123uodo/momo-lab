@@ -23,9 +23,11 @@ SITE = os.path.join(BASE, "site")
 OUT = os.path.join(SITE, "data")
 
 BLOCK = 800          # 每个词单分块包含的词数
+LEXBLK = 800         # 词库每个分块的词数（浏览/搜索按块加载，不再整字母拉）
 TR_LEX = 120         # lex 片里释义截断长度
 TR_FULL = 220        # 分块里释义截断长度
 DF_FULL = 200        # 英文释义截断长度
+SX_PARTS = 8         # 全局紧凑词典的分块数（搜索兜底用）
 
 TAG_NAMES = {1: "人名", 2: "地名", 3: "国家地区", 4: "词组短语", 5: "缩写符号",
              6: "基础词汇", 7: "常用表达", 8: "一般词汇", 9: "专有名词",
@@ -106,34 +108,72 @@ def main():
         ext = [vid, cut(r["definition"], DF_FULL), r["exchange"] or "",
                cut(r["related"], 160), tagmap.get(vid, [])[:6], deckmap.get(vid, [])[:4]]
         buckets.setdefault(L, []).append((base, ext))
+    lex_meta = {}
     for L in sorted(buckets):
         pairs = buckets[L]
         pairs.sort(key=lambda p: p[0][1].lower())
         letter_count[L] = len(pairs)
-        lex_total += jdump(os.path.join(OUT, "lex", L + ".json"), [p[0] for p in pairs])
-        x_total += jdump(os.path.join(OUT, "x", L + ".json"), [p[1] for p in pairs])
+        nb = (len(pairs) + LEXBLK - 1) // LEXBLK
+        for b in range(nb):
+            part = pairs[b * LEXBLK:(b + 1) * LEXBLK]
+            lex_total += jdump(os.path.join(OUT, "lex", L, "%d.json" % b), [p[0] for p in part])
+            x_total += jdump(os.path.join(OUT, "x", L, "%d.json" % b), [p[1] for p in part])
+        lex_meta[L] = dict(n=len(pairs), blocks=nb)
     total_words = sum(letter_count.values())
-    # id → 字母片 反查索引（详情弹层按 id 找词用）。
-    # 原来是一整个 1.3 MB 的 {ids, b}，慢网下光拉索引就要 40 秒。
-    # 改成按 id 分块：每块 20000 个位置，用定长字符串存字母，
-    # 点一个词只需拉 20 KB 的对应块。
+    log("[lex]  %d 词 → %d 个字母 × 分块（%d 词/块）%s，扩展片 %s"
+        % (total_words, len(buckets), LEXBLK, kb(lex_total), kb(x_total)))
+
+    # id → (字母, 块号) 反查索引。
+    # 老结构是 bkt/<k>.json 里一条 20000 字符的定长串（每块 20 KB）；
+    # 现在词库本身也分块了，要连块号一起记，改成稀疏记录：
+    # 只存"确实有词"的位置，单块约 9 KB，比定长串还小。
     CHUNK = 20000
-    letters = sorted(buckets)
     chunks = {}
-    for vid, L in ((p[0][0], L) for L in letters for p in buckets[L]):
-        k, off = divmod(vid, CHUNK)
-        arr = chunks.get(k)
-        if arr is None:
-            arr = ["."] * CHUNK  # . 表示该位置没有词
-            chunks[k] = arr
-        arr[off] = L
+    for L in sorted(buckets):
+        nb = lex_meta[L]["blocks"]
+        for b in range(nb):
+            for p in buckets[L][b * LEXBLK:(b + 1) * LEXBLK]:
+                k, off = divmod(p[0][0], CHUNK)
+                chunks.setdefault(k, []).append((off, "%s%x" % (L, b)))
     os.makedirs(os.path.join(OUT, "bkt"), exist_ok=True)
     bsz = 0
     for k, arr in sorted(chunks.items()):
+        arr.sort()
         bsz += jdump(os.path.join(OUT, "bkt", "%d.json" % k),
-                     dict(start=k * CHUNK, size=CHUNK, b="".join(arr)))
-    log("[lex]  %d 词 → %d 个首字母分片 %s，扩展片 %s，反查索引 %d 块 %s"
-        % (total_words, len(buckets), kb(lex_total), kb(x_total), len(chunks), kb(bsz)))
+                     dict(s=k * CHUNK, i=[a for a, _ in arr], c=[c for _, c in arr]))
+    log("[lex]  反查索引 %d 块 %s（单块约 %s）"
+        % (len(chunks), kb(bsz), kb(bsz / max(1, len(chunks)))))
+
+    # ---------- 1b. 搜索索引：前缀桶 + 全局紧凑词典 ----------
+    # 前缀桶：按拼写前两个字符分组，只存 [id, 拼写]。搜 "aban" 只需拉 1 个几 KB 的桶。
+    sx_total = 0
+    sbuckets = {}
+    for L in sorted(buckets):
+        for p in buckets[L]:
+            sp = (p[0][1] or "").lower()
+            key = sp[:2] if len(sp) >= 2 else sp[:1] + "_"
+            # 只保留 ASCII 字母数字：法语 bê、德语 über 这类词的头两字母带变音符号，
+            # 直接当文件名会出现非 ASCII 名（APK 打包和部分静态托管都会报错）。
+            # 前端算 key 时用的也是同样的替换规则，两边必须一致。
+            key = "".join(ch if (ch.isascii() and ch.isalnum()) else "_" for ch in key)
+            sbuckets.setdefault(key, []).append([p[0][0], p[0][1]])
+    for key, arr in sorted(sbuckets.items()):
+        sx_total += jdump(os.path.join(OUT, "sx", key + ".json"), arr)
+    log("[sx]   前缀桶 %d 个 %s" % (len(sbuckets), kb(sx_total)))
+
+    # 全局紧凑词典：按 id 排好切成 SX_PARTS 份，用于"包含式"搜索兜底
+    # （例如搜 bandon 也能找到 abandon）。只在需要时才拉。
+    allw = []
+    for L in sorted(buckets):
+        for p in buckets[L]:
+            allw.append([p[0][0], p[0][1]])
+    allw.sort()
+    per = (len(allw) + SX_PARTS - 1) // SX_PARTS
+    sa_total = 0
+    for i in range(SX_PARTS):
+        sa_total += jdump(os.path.join(OUT, "sxa", "%d.json" % i), allw[i * per:(i + 1) * per])
+    log("[sx]   全库词典 %d 份 %s（每份约 %s）"
+        % (SX_PARTS, kb(sa_total), kb(sa_total / SX_PARTS)))
 
     # ---------- 2. 词单：id 表 + 分块词数据 ----------
     wmap = {}
@@ -214,10 +254,12 @@ def main():
     meta_sz = jdump(os.path.join(OUT, "meta.json"), dict(
         total_words=total_words,
         letters=letter_count,
+        lex=lex_meta,
         decks=decks,
         loaded_books=len(loaded),
         built_at=meta.get("built_at", ""),
         block=BLOCK,
+        lex_block=LEXBLK,
     ))
     log("[meta] %s" % kb(meta_sz))
 
@@ -249,7 +291,10 @@ def main():
                 '<meta name="apple-mobile-web-app-title" content="墨墨单词">\n'
                 '<link rel="apple-touch-icon" href="icon-192.png">\n'
                 '<script src="store.js"></script>\n')
-        tail = ('<script>if("serviceWorker" in navigator){addEventListener("load",function(){'
+        # 原生壳（APK）里资源全在本地，再挂 Service Worker 只是多一层开销，
+        # 用 UA 标记跳过；网页版照常注册，保持可安装 + 断网可用。
+        tail = ('<script>if("serviceWorker" in navigator&&!/MomoNative/.test(navigator.userAgent))'
+                '{addEventListener("load",function(){'
                 'navigator.serviceWorker.register("sw.js").catch(function(){})});}</script>\n')
         html = html.replace("</head>", head + "</head>").replace("</body>", tail + "</body>")
         with open(os.path.join(SITE, "index.html"), "w", encoding="utf-8", newline="") as f:

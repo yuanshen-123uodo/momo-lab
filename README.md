@@ -2,12 +2,13 @@
 
 复刻**墨墨背单词**调度算法的交互式背单词平台。
 
-两套形态，共用一套前端：
+三套形态，共用一套前端：
 
 | 形态 | 入口 | 适用场景 |
 |---|---|---|
 | 本地服务版 | `python server.py` → http://127.0.0.1:8899 | 桌面，功能最全 |
 | 手机版（PWA） | `export_static.py` → `site/`，可部署到任意静态托管 | 手机添加到主屏幕，离线可背 |
+| 手机版（APK） | `build_apk.py` → `dist/momo-words-1.0.apk` | 装上即用，**完全不需要网络**，不受托管速度影响 |
 
 ---
 
@@ -22,9 +23,12 @@ python build_db.py          # → data/momo.db（约 33 MB）
 python server.py            # 端口被占会自动往后找
 # 或直接双击 start.bat
 
-# 手机版
+# 手机版（PWA）
 python gen_icons.py         # 生成 PWA 图标（需要 playwright）
 python export_static.py     # → site/（纯静态，可直接部署）
+
+# 手机版（APK）：先 export_static.py，再打包
+python build_apk.py         # → dist/momo-words-1.0.apk（约 16 MB）
 ```
 
 ---
@@ -74,15 +78,21 @@ start.bat          Windows 一键启动
 
 | 文件 | 用途 | 单份大小 |
 |---|---|---|
-| `data/meta.json` | 全局信息 + 22 个词单清单 | 3 KB |
+| `data/meta.json` | 全局信息 + 22 个词单清单 + 每字母块数 | 4 KB |
 | `data/deck/<id>.json` | 词单的词 id 有序表 | 10–390 KB |
 | `data/dw/<id>/<块>.json` | 词单分块，每块 800 词的完整数据 | ~90 KB |
-| `data/lex/<a-z>.json` | 全库按首字母分片（浏览/搜索） | ~500 KB |
-| `data/x/<a-z>.json` | 英文释义/词形/相关词（打开详情才拉） | ~350 KB |
-| `data/bkt.json` | id → 字母片 反查索引 | 1.2 MB |
+| `data/lex/<字母>/<块>.json` | 词库分块，每块 800 词（浏览 / 详情） | ~97 KB |
+| `data/x/<字母>/<块>.json` | 英文释义/词形/相关词（打开详情才拉） | ~39 KB |
+| `data/bkt/<块>.json` | id → (字母, 块号) 稀疏反查索引 | ~9 KB |
+| `data/sx/<前两字母>.json` | 前缀搜索桶，搜 `aban` 直接命中 | ~6 KB |
+| `data/sxa/<0-7>.json` | 全库紧凑词典，仅用于"片段搜索"兜底 | ~287 KB |
 | `data/seed.json` | 母库导出的真实学习记录（首次打开继承） | 93 KB |
 
-实测：进 App 选一个词单，**总传输约 106 KB**；之后 Service Worker 全缓存，断网也能背。
+实测：进 App 选一个词单，**总传输约 106 KB**；打开词库页只拉 1 个 97 KB 分片；
+点开一个词的详情约 0.85 秒（此前整片加载需要 24 秒）。
+
+搜索分两级：先查前缀桶（几 KB，毫秒级），前缀一个都没命中时才拉 8 份全库词典做
+包含式匹配 —— 所以 `bandon` 也能找到 `abandon`。
 
 ---
 
@@ -136,6 +146,35 @@ Branch 选 `gh-pages` / `/ (root)`，保存。几分钟后 https://\<你\>.githu
 
 ---
 
+## 安卓 APK（完全不联网）
+
+PWA 依赖 Service Worker 缓存，首次仍要联网拉 40 MB 分片，清缓存就丢；
+托管速度在国内也不稳定。APK 把整站放进 `assets/`，装上就是完整的：
+
+```bash
+python export_static.py     # 先产出 site/
+python build_apk.py         # → dist/momo-words-1.0.apk（16.3 MB）
+```
+
+实现要点：
+
+- **不用 `file://`**：file 协议下 `fetch`、IndexedDB 都受同源限制，而数据层完全依赖
+  `fetch` 读 JSON 分片。壳里用 `https://appassets.momo.local/` 这个假域名，
+  `shouldInterceptRequest` 直接把请求接到 `AssetManager`，不会真的出网，也就没有证书问题。
+- **不申请任何权限**，Manifest 里连 `INTERNET` 都没有。
+- **APK 里不注册 Service Worker**（UA 带 `MomoNative` 时页面自动跳过），资源本就在本地，
+  多一层缓存没有意义。
+- 进度仍存 WebView 的 IndexedDB（应用私有目录），卸载才丢；数据页的导出/导入照常可用。
+
+工具链是便携解压的，不写注册表：JDK 17 + Android build-tools 34 + platform android-35，
+放在 `../toolchain/`（可用 `MOMO_TOOLCHAIN` 指定）。构建走
+`aapt2 → javac → d8 → zip → zipalign → apksigner` 手工链，不需要 Gradle。
+
+签名证书是 `android/momo.keystore`（自签名，口令 `momolab`）。
+**升级安装必须用同一个证书**，换证书只能卸载重装、进度会丢 —— 这个文件要一起备份。
+
+---
+
 ## 数据备份与迁移
 
 首页右上角「数据」→ `#/data`，三种操作：
@@ -175,7 +214,12 @@ Branch 选 `gh-pages` / `/ (root)`，保存。几分钟后 https://\<你\>.githu
 ## 已知限制
 
 - ECDICT 直接命中 60%，短语靠「组成词释义拼接」补到 **96.7%** 有释义
-- 2086 本词书中只有 1 本带完整词表（离线包限制），其余靠 ECDICT 考试标签补出 22 个可背词单
+- 2086 本词书里**只有 1 本**带完整词表（`SIX_LEVEL_DEEP` 1934 词）。
+  词表在墨墨服务端按需下发，本地库 `BK_VOC_TB` 只留你实际打开过的那些 ——
+  想在本地多几本可背的书，只能在 App 里把这些书加入计划并打开一次，再重新导库
+- `interpretations.csv` 里 2623 条官方释义是加密的（`MMEncipher.d()`，dex 内 Java 实现），
+  仅占全库 2.0%，未做逆向；这些词的释义回落到 ECDICT
 - PWA 版随包带一份母库导出的学习记录快照（`seed.json`），手机首次打开即继承；
   它公开在静态文件里，介意的话可以不导出这份种子（注释掉 `export_static.py` 的 4.5 节）
 - 桌面版会导入墨墨运行库里的真实记录，与 PWA 的种子同源
+- 搜索按**拼写**匹配，不搜中文释义（中文要全库倒排索引，体积不划算）

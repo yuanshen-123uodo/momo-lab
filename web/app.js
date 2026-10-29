@@ -301,7 +301,13 @@ async function viewBooks(q) {
   $("#main").innerHTML = `
   <div class="page">
     <div class="page-head"><div><div class="eyebrow">Library</div><h1>词书库</h1>
-      <p>${fmt(d.total)} 本词书 · 离线包只带回你账号那本书的完整词表，其余需联网同步（当前可学 ${d.loaded_count} 本）</p></div></div>
+      <p>${fmt(d.total)} 本词书 · 其中 ${d.loaded_count} 本有完整词表可直接背，其余只有书目信息</p></div></div>
+    ${d.loaded_count < d.total ? `<div class="card" style="margin-bottom:14px;background:var(--amber-soft);border-color:var(--amber)">
+      <div class="small" style="line-height:1.7">
+        <b>为什么只有 ${d.loaded_count} 本能背？</b><br>
+        词书词表在墨墨服务端按需下发，本地库里只留你用过的那些。想多几本可背的书，
+        在手机上的墨墨 App 里把这些书「加入计划」并打开一次，词表下载到本地后就能再导出（见 README）。
+      </div></div>` : ""}
     <div class="toolbar">
       <input class="input grow" id="bq" placeholder="搜索书名 / 作者 / 出版社" value="${esc(kw)}" style="max-width:340px">
       <div class="seg" id="bsort">
@@ -317,7 +323,7 @@ async function viewBooks(q) {
           <div class="a">${esc([b.author, b.publisher, b.version].filter(Boolean).join(" · ") || "作者信息缺失")}</div>
         </div>
         <div class="c">${fmt(b.count)}</div>
-        ${b.loaded ? `<a class="btn sm" href="#/study?deck=book:${b.id}&mode=mixed">学习</a>` : `<span class="small muted" style="width:52px;text-align:right">—</span>`}
+        ${b.loaded ? `<a class="btn sm" href="#/study?deck=book:${b.id}&mode=mixed">学习</a>` : `<span class="chip" style="margin-left:8px;flex:0 0 auto">仅索引</span>`}
       </div>`).join("")}
     </div></div>
     <div class="row" style="justify-content:center;margin-top:18px;gap:8px">
@@ -349,10 +355,10 @@ async function viewBrowse(q) {
   <div class="page">
     <div class="page-head"><div><div class="eyebrow">Browse</div><h1>词库</h1>
       <p>${OFFLINE
-        ? `词库共 ${fmt((S.ov && S.ov.total_words) || d.total)} 条 · 按字母分片加载，当前 ${letter === "all" ? "A" : letter} 开头 ${fmt(d.total)} 条 · 点上方字母切换`
+        ? `词库共 ${fmt((S.ov && S.ov.total_words) || 0)} 条 · 当前 ${letter === "all" ? "A" : letter} 开头 ${fmt(d.total)} 条 · 按需分块加载，首屏只取 60 条`
         : `${fmt(d.total)} 条词条 · 点击任意词查看音标、释义、词形变化与学习记录`}</p></div></div>
     <div class="toolbar">
-      <input class="input grow" id="sq" placeholder="输入单词快速查（支持前缀 / 模糊）" style="max-width:420px">
+      <input class="input grow" id="sq" placeholder="输入英文单词，支持前缀与片段（如 bandon 也能找到 abandon）" style="max-width:420px">
       <div class="seg" id="sortseg">
         <button data-s="alpha" class="${sort === "alpha" ? "on" : ""}">字母</button>
         <button data-s="frq" class="${sort === "frq" ? "on" : ""}">词频</button>

@@ -16,6 +16,13 @@ data/*.db-wal
 /shots/
 node_modules/
 
+# ---- 安卓打包产物 ----
+/android/build/
+/android/res/mipmap-*/
+# 签名证书不入库：泄露等于别人能签出"可覆盖安装"的假包。
+# 但**必须自己备份**，换证书就只能卸载重装、进度会丢。
+/android/momo.keystore
+
 # ---- 测试截图（check_deep.py / check_pwa.py 产物）----
 shot_*.png
 study_page.png
