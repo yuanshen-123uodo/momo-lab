@@ -6,12 +6,33 @@ const esc = (s) => (s == null ? "" : String(s)).replace(/[&<>"']/g, (m) => ({ "&
 const pct = (a, b) => (b > 0 ? Math.round((a / b) * 100) : 0);
 const fmt = (n) => (n >= 10000 ? (n / 10000).toFixed(1) + " 万" : String(n ?? 0));
 
+// PWA 形态由 store.js 在 head 中先行加载，这里判断一次即可
+const OFFLINE = !!(window.MOMO && window.MOMO.offline);
+
+/* 路由序号：切页就 +1。慢请求返回时若序号已变，说明这次渲染已经过期，
+   必须丢弃，否则旧页面会把新页面覆盖掉（线上慢网下真的会发生）。 */
+let ROUTE_SEQ = 0;
+class StaleError extends Error {
+  constructor() {
+    super("stale");
+    this.stale = true;
+  }
+}
+// 事件处理器里触发的 api 若因切页作废，抛出的 StaleError 不应冒到控制台
+window.addEventListener("unhandledrejection", (e) => {
+  if (e.reason && e.reason.stale) e.preventDefault();
+});
+
 async function api(path, opt) {
-  // 离线（PWA）模式：由 store.js 用 IndexedDB + 静态分片应答
-  if (window.MOMO && window.MOMO.offline) return MOMO.api(path, opt);
-  const r = await fetch("/api/" + path, opt);
-  if (!r.ok) throw new Error("API " + r.status + " " + path);
-  return r.json();
+  const seq = ROUTE_SEQ;
+  const data = await (window.MOMO && window.MOMO.offline
+    ? MOMO.api(path, opt)
+    : fetch("/api/" + path, opt).then((r) => {
+        if (!r.ok) throw new Error("API " + r.status + " " + path);
+        return r.json();
+      }));
+  if (seq !== ROUTE_SEQ) throw new StaleError();
+  return data;
 }
 const post = (path, body) =>
   api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -120,6 +141,8 @@ function parseHash() {
 
 async function route() {
   const { path, q } = parseHash();
+  ROUTE_SEQ++; // 让所有在途请求作废
+  const seq = ROUTE_SEQ;
   S.route = path;
   const main = $("#main");
   if (path !== "study") main.style.overflow = "auto";
@@ -138,6 +161,8 @@ async function route() {
     if (path === "data") return await viewData();
     if (path === "study") return await viewStudy(q);
   } catch (e) {
+    if (e && e.stale) return; // 过期渲染，静默丢弃
+    if (seq !== ROUTE_SEQ) return; // 报错也来自旧路由，不覆盖当前页
     main.innerHTML = `<div class="page"><div class="empty"><h3>出错了</h3><p>${esc(e.message)}</p></div></div>`;
   }
 }
@@ -315,7 +340,7 @@ async function viewBooks(q) {
 
 /* ---------------- 词库浏览 ---------------- */
 async function viewBrowse(q) {
-  const letter = q.letter || "all";
+  const letter = q.letter || (OFFLINE ? "A" : "all");
   const sort = q.sort || "alpha";
   const page = +(q.page || 0);
   const d = await api(`browse?letter=${letter}&sort=${sort}&page=${page}`);
@@ -323,7 +348,9 @@ async function viewBrowse(q) {
   $("#main").innerHTML = `
   <div class="page">
     <div class="page-head"><div><div class="eyebrow">Browse</div><h1>词库</h1>
-      <p>${fmt(d.total)} 条词条 · 点击任意词查看音标、释义、词形变化与学习记录</p></div></div>
+      <p>${OFFLINE
+        ? `词库共 ${fmt((S.ov && S.ov.total_words) || d.total)} 条 · 按字母分片加载，当前 ${letter === "all" ? "A" : letter} 开头 ${fmt(d.total)} 条 · 点上方字母切换`
+        : `${fmt(d.total)} 条词条 · 点击任意词查看音标、释义、词形变化与学习记录`}</p></div></div>
     <div class="toolbar">
       <input class="input grow" id="sq" placeholder="输入单词快速查（支持前缀 / 模糊）" style="max-width:420px">
       <div class="seg" id="sortseg">
@@ -332,7 +359,7 @@ async function viewBrowse(q) {
       </div>
     </div>
     <div class="alpha">
-      <button data-l="all" class="${letter === "all" ? "on" : ""}">全</button>
+      ${OFFLINE ? "" : `<button data-l="all" class="${letter === "all" ? "on" : ""}">全</button>`}
       ${AZ.map((c) => `<button data-l="${c}" class="${letter === c ? "on" : ""}">${c}</button>`).join("")}
     </div>
     <div class="card"><div id="wlist">
@@ -1128,7 +1155,11 @@ async function viewData() {
   try {
     if (navigator.storage && navigator.storage.estimate) est = await navigator.storage.estimate();
   } catch (e) { /* 部分浏览器不支持 */ }
-  const mb = (n) => (n ? (n / 1048576).toFixed(1) + " MB" : "—");
+  const mb = (n) => {
+    if (!n) return "—";
+    const m = n / 1048576;
+    return m >= 1024 ? (m / 1024).toFixed(1) + " GB" : m.toFixed(1) + " MB";
+  };
   const last = localStorage.getItem("momo.lastExport") || "从未导出";
   const offline = !!(window.MOMO && window.MOMO.offline);
 
@@ -1147,7 +1178,7 @@ async function viewData() {
       <div class="stat-box"><div class="k">已学词</div><div class="v">${fmt(ov.studied)}<small>词</small></div></div>
       <div class="stat-box"><div class="k">学习日</div><div class="v">${ov.days}<small>天</small></div></div>
       <div class="stat-box"><div class="k">待复习</div><div class="v">${fmt(ov.due)}<small>词</small></div></div>
-      <div class="stat-box"><div class="k">本机存储</div><div class="v">${mb(est.usage)}<small>${est.quota ? "/ " + mb(est.quota) : ""}</small></div></div>
+      <div class="stat-box"><div class="k">本机存储</div><div class="v">${mb(est.usage)}<small>${est.quota ? "共 " + mb(est.quota) : ""}</small></div></div>
     </div>
 
     <div class="section-title"><h2>导出</h2></div>

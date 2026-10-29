@@ -64,17 +64,21 @@
     return p;
   }
 
+  /* 分片文件名一律小写。界面上的字母按钮给的是大写 "B"，而 GitHub Pages /
+     Linux 的静态托管区分大小写，直接拼会 404（Windows 上测不出来）。 */
   function getLex(bk) {
-    if (caches.lex.has(bk)) return Promise.resolve(caches.lex.get(bk));
-    return getJSON("lex/" + bk + ".json").then(function (r) {
-      lruPut(caches.lex, bk, r);
+    var k = String(bk || "").toLowerCase();
+    if (caches.lex.has(k)) return Promise.resolve(caches.lex.get(k));
+    return getJSON("lex/" + k + ".json").then(function (r) {
+      lruPut(caches.lex, k, r);
       return r;
     });
   }
   function getX(bk) {
-    if (caches.x.has(bk)) return Promise.resolve(caches.x.get(bk));
-    return getJSON("x/" + bk + ".json").then(function (r) {
-      lruPut(caches.x, bk, r);
+    var k = String(bk || "").toLowerCase();
+    if (caches.x.has(k)) return Promise.resolve(caches.x.get(k));
+    return getJSON("x/" + k + ".json").then(function (r) {
+      lruPut(caches.x, k, r);
       return r;
     });
   }
